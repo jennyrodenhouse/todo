@@ -415,6 +415,74 @@
   }
   .empty-col .empty-icon { font-size: 28px; margin-bottom: 6px; }
 
+  /* ── AUTH OVERLAY ───────────────────── */
+  #auth-overlay {
+    position: fixed; inset: 0; z-index: 2000;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #auth-overlay.hidden { display: none; }
+
+  .auth-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 40px 36px;
+    width: 380px; max-width: 92vw;
+    box-shadow: var(--shadow);
+    text-align: center;
+  }
+  .auth-logo { font-size: 42px; margin-bottom: 14px; }
+  .auth-box h1 { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+  .auth-box p  { font-size: 14px; color: var(--text-muted); margin-bottom: 26px; line-height: 1.5; }
+
+  .auth-input {
+    width: 100%; background: var(--surface2);
+    border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 12px 14px;
+    font-size: 15px; outline: none;
+    transition: border-color 0.15s; margin-bottom: 10px;
+    text-align: center; letter-spacing: 3px;
+    font-family: inherit;
+  }
+  .auth-input::placeholder { letter-spacing: 0; }
+  .auth-input:focus { border-color: var(--accent); }
+
+  .auth-error {
+    color: var(--danger); font-size: 13px;
+    min-height: 18px; margin-bottom: 10px;
+  }
+  .btn-auth {
+    width: 100%; background: var(--accent);
+    border: none; color: #fff; border-radius: 8px;
+    padding: 12px; font-size: 15px; font-weight: 600;
+    cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+    margin-bottom: 14px;
+  }
+  .btn-auth:hover { opacity: 0.85; transform: translateY(-1px); }
+  .auth-hint { font-size: 12px; color: var(--text-muted); }
+  .auth-change-link {
+    font-size: 12px; color: var(--text-muted); cursor: pointer;
+    text-decoration: underline; text-underline-offset: 3px;
+    background: none; border: none; margin-top: 10px; display: block; width: 100%;
+    transition: color 0.15s;
+  }
+  .auth-change-link:hover { color: var(--accent); }
+
+  /* sidebar footer */
+  .sidebar-footer {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .sidebar-footer button {
+    background: none; border: none; color: var(--text-muted);
+    font-size: 12px; cursor: pointer; padding: 4px 8px;
+    border-radius: 6px; transition: color 0.15s, background 0.15s;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .sidebar-footer button:hover { color: var(--text); background: var(--surface2); }
+
   /* ── SCROLLBAR ───────────────────────── */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -451,6 +519,11 @@
   </div>
 
   <div id="project-list"></div>
+
+  <div class="sidebar-footer">
+    <button onclick="lockApp()" title="Lock tracker">🔒 Lock</button>
+    <button onclick="changePasswordFlow()" title="Change password">Change PW</button>
+  </div>
 </nav>
 
 <!-- MAIN -->
@@ -570,6 +643,21 @@
       <button class="btn-ghost" onclick="closeTaskModal()">Cancel</button>
       <button class="btn-primary" onclick="saveTask()">Save Task</button>
     </div>
+  </div>
+</div>
+
+<!-- AUTH OVERLAY -->
+<div id="auth-overlay">
+  <div class="auth-box">
+    <div class="auth-logo">🔒</div>
+    <h1 id="auth-title">My Tracker</h1>
+    <p  id="auth-subtitle">Enter your password to continue.</p>
+    <input type="password" class="auth-input" id="auth-pw"      placeholder="Password"         autocomplete="current-password" />
+    <input type="password" class="auth-input" id="auth-confirm" placeholder="Confirm password" autocomplete="new-password" style="display:none" />
+    <div class="auth-error" id="auth-error"></div>
+    <button class="btn-auth" id="auth-btn">Unlock</button>
+    <div class="auth-hint" id="auth-hint">Session stays unlocked until you close the tab.</div>
+    <button class="auth-change-link" id="auth-cancel-change" style="display:none" onclick="cancelChangePassword()">← Back to login</button>
   </div>
 </div>
 
@@ -1017,11 +1105,147 @@ function seedData() {
   save();
 }
 
+// ── AUTH ───────────────────────────────────────────────────────────
+const AUTH_HASH_KEY = 'tracker_pw_hash';
+const AUTH_SESSION_KEY = 'tracker_authed';
+let authMode = 'login'; // 'setup' | 'login' | 'change'
+
+async function sha256(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+function hasPassword() { return !!localStorage.getItem(AUTH_HASH_KEY); }
+function isSessionAuthed() { return sessionStorage.getItem(AUTH_SESSION_KEY) === '1'; }
+
+function showAuth(mode) {
+  authMode = mode;
+  const overlay  = document.getElementById('auth-overlay');
+  const title    = document.getElementById('auth-title');
+  const subtitle = document.getElementById('auth-subtitle');
+  const confirmEl= document.getElementById('auth-confirm');
+  const btn      = document.getElementById('auth-btn');
+  const hint     = document.getElementById('auth-hint');
+  const backBtn  = document.getElementById('auth-cancel-change');
+
+  document.getElementById('auth-pw').value = '';
+  document.getElementById('auth-confirm').value = '';
+  document.getElementById('auth-error').textContent = '';
+
+  if (mode === 'setup') {
+    title.textContent = 'Set Your Password';
+    subtitle.textContent = 'Choose a password to protect your tracker.';
+    confirmEl.style.display = '';
+    btn.textContent = 'Set Password';
+    hint.textContent = "You'll need this password every time you open the tracker.";
+    backBtn.style.display = 'none';
+  } else if (mode === 'change') {
+    title.textContent = 'Change Password';
+    subtitle.textContent = 'Enter your current password, then choose a new one.';
+    confirmEl.style.display = '';
+    btn.textContent = 'Update Password';
+    hint.textContent = '';
+    backBtn.style.display = '';
+  } else {
+    title.textContent = 'My Tracker';
+    subtitle.textContent = 'Enter your password to continue.';
+    confirmEl.style.display = 'none';
+    btn.textContent = 'Unlock';
+    hint.textContent = 'Session stays unlocked until you close the tab.';
+    backBtn.style.display = 'none';
+  }
+
+  overlay.classList.remove('hidden');
+  setTimeout(() => document.getElementById('auth-pw').focus(), 50);
+}
+
+function hideAuth() {
+  document.getElementById('auth-overlay').classList.add('hidden');
+}
+
+async function handleAuth() {
+  const pw      = document.getElementById('auth-pw').value;
+  const confirm = document.getElementById('auth-confirm').value;
+  const errorEl = document.getElementById('auth-error');
+  errorEl.textContent = '';
+
+  if (!pw) { errorEl.textContent = 'Please enter a password.'; return; }
+
+  if (authMode === 'setup') {
+    if (pw.length < 4)   { errorEl.textContent = 'Password must be at least 4 characters.'; return; }
+    if (pw !== confirm)  { errorEl.textContent = 'Passwords do not match.'; return; }
+    localStorage.setItem(AUTH_HASH_KEY, await sha256(pw));
+    sessionStorage.setItem(AUTH_SESSION_KEY, '1');
+    hideAuth();
+    bootApp();
+
+  } else if (authMode === 'change') {
+    // first field = current password, second = new password
+    // re-use auth-pw for current, auth-confirm for new password
+    const currentHash = await sha256(pw);
+    if (currentHash !== localStorage.getItem(AUTH_HASH_KEY)) {
+      errorEl.textContent = 'Current password is incorrect.'; return;
+    }
+    if (!confirm)             { errorEl.textContent = 'Enter a new password.'; return; }
+    if (confirm.length < 4)  { errorEl.textContent = 'New password must be at least 4 characters.'; return; }
+    localStorage.setItem(AUTH_HASH_KEY, await sha256(confirm));
+    toast('Password updated');
+    hideAuth();
+
+  } else {
+    const hash = await sha256(pw);
+    if (hash === localStorage.getItem(AUTH_HASH_KEY)) {
+      sessionStorage.setItem(AUTH_SESSION_KEY, '1');
+      hideAuth();
+      bootApp();
+    } else {
+      errorEl.textContent = 'Incorrect password.';
+      document.getElementById('auth-pw').select();
+    }
+  }
+}
+
+function lockApp() {
+  sessionStorage.removeItem(AUTH_SESSION_KEY);
+  showAuth('login');
+}
+
+function changePasswordFlow() {
+  // re-use confirm field for "new password" in change mode
+  document.getElementById('auth-confirm').placeholder = 'New password';
+  document.getElementById('auth-pw').placeholder = 'Current password';
+  showAuth('change');
+}
+
+function cancelChangePassword() {
+  document.getElementById('auth-pw').placeholder = 'Password';
+  document.getElementById('auth-confirm').placeholder = 'Confirm password';
+  showAuth('login');
+}
+
+document.getElementById('auth-btn').addEventListener('click', handleAuth);
+['auth-pw','auth-confirm'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') handleAuth();
+  });
+});
+
 // ── BOOT ───────────────────────────────────────────────────────────
-load();
-if (state.projects.length === 0 && state.tasks.length === 0) seedData();
-renderSidebar();
-renderBoard();
+function bootApp() {
+  load();
+  if (state.projects.length === 0 && state.tasks.length === 0) seedData();
+  renderSidebar();
+  renderBoard();
+}
+
+if (isSessionAuthed()) {
+  hideAuth();
+  bootApp();
+} else if (!hasPassword()) {
+  showAuth('setup');
+} else {
+  showAuth('login');
+}
 </script>
 </body>
 </html>
